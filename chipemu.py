@@ -23,7 +23,7 @@ Dependencies:
   - pygame (pip install pygame)
 
 Run:
-  python chip8_emulator.py path/to/rom [--scale 10] [--clock 700] [--superchip]
+  python chipemu.py path/to/rom [--scale 10] [--clock 700] [--superchip]
 
 Author: D/V, FX0A fix by AArt1256
 License: MIT
@@ -556,6 +556,7 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("Exiting.")
+
 
 
 
