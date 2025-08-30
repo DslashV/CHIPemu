@@ -25,7 +25,7 @@ Dependencies:
 Run:
   python chip8_emulator.py path/to/rom [--scale 10] [--clock 700] [--superchip]
 
-Author: ChatGPT (GPT-5 Thinking)
+Author: D/V
 License: MIT
 """
 from __future__ import annotations
@@ -547,3 +547,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("
 Exiting.")
+
