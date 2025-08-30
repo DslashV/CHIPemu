@@ -28,6 +28,7 @@ Run:
 Author: D/V
 License: MIT
 """
+
 from __future__ import annotations
 import argparse
 import sys
@@ -91,8 +92,6 @@ KEYMAP = {
     0xE: pygame.K_f,
     0xF: pygame.K_v,
 }
-
-# ... rest of the code unchanged (emulator class, frontend, main)
 
 @dataclass
 class Chip8:
@@ -549,5 +548,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("
 Exiting.")
+
 
 
