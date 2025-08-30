@@ -92,6 +92,8 @@ KEYMAP = {
     0xF: pygame.K_v,
 }
 
+# ... rest of the code unchanged (emulator class, frontend, main)
+
 @dataclass
 class Chip8:
     legacy_store: bool = False
@@ -547,4 +549,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("
 Exiting.")
+
 
