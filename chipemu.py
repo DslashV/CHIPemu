@@ -1,33 +1,31 @@
 #!/usr/bin/env python3
 """
-Chip-8 Emulator in Python (single file)
+Enhanced Chip-8 / Super-CHIP Emulator in Python (single file)
+
+Features added vs original version:
+- Runtime compatibility flags:
+  --legacy-store    : original FX55/FX65 increment I after store/load
+  --legacy-shift    : original 8XY6/8XYE behavior (shift Vy into Vx before shift)
+  --alt-bnnn        : alternative BNNN behavior (use Vx as offset instead of V0)
+  --superchip       : enable Super-CHIP (SCHIP) features including 128x64 mode
+- SCHIP features implemented:
+  00FB - scroll right 4
+  00FC - scroll left 4
+  00CN - scroll down N
+  00FE - switch to low-res (64x32)
+  00FF - switch to high-res (128x64)
+  DRW with n==0 draws a 16x16 sprite (2 bytes per row)
+- Shift opcode behavior selectable via --legacy-shift
+- Display supports both 64x32 and 128x64 with proper rendering and wrapping
 
 Dependencies:
   - Python 3.8+
   - pygame (pip install pygame)
 
 Run:
-  python chipemu.py path/to/rom [--scale 15] [--clock 700] [--tone 440]
+  python chip8_emulator.py path/to/rom [--scale 10] [--clock 700] [--superchip]
 
-Keyboard mapping (common layout):
-
-  CHIP-8  =>  Keyboard
-  1 2 3 C =>  1 2 3 4
-  4 5 6 D =>  Q W E R
-  7 8 9 E =>  A S D F
-  A 0 B F =>  Z X C V
-
-Notes:
-- Implements the full standard CHIP-8 instruction set and most common behaviors.
-- FX55 / FX65 do NOT modify I by default (modern/"XO-CHIP" behavior). Use --legacy-store
-  to enable the original quirk that increments I.
-- BNNN uses V0 as the offset (standard behavior).
-- Drawing wraps around screen edges.
-- Sound: a simple square-wave beep plays whenever sound_timer > 0 (requires mixer).
-
-Tested with several public-domain ROMs (BC_test, IBM Logo, etc.).
-
-Author: D/V
+Author: ChatGPT (GPT-5 Thinking)
 License: MIT
 """
 from __future__ import annotations
@@ -50,7 +48,9 @@ except Exception as e:
 MEM_SIZE = 4096
 START_ADDRESS = 0x200
 FONT_ADDRESS = 0x50  # canonical address for font sprites
-SCREEN_W, SCREEN_H = 64, 32
+
+# Default low-res Chip-8 screen
+DEFAULT_W, DEFAULT_H = 64, 32
 
 # Classic CHIP-8 4x5 font (each char 5 bytes)
 FONTSET = [
@@ -92,11 +92,13 @@ KEYMAP = {
     0xF: pygame.K_v,
 }
 
-
 @dataclass
 class Chip8:
-    # if True, FX55/FX65 increment I (original quirk)
     legacy_store: bool = False
+    legacy_shift: bool = False
+    alt_bnnn: bool = False
+    schip_mode: bool = False
+
     memory: bytearray = field(default_factory=lambda: bytearray(MEM_SIZE))
     V: List[int] = field(default_factory=lambda: [0] * 16)  # registers V0..VF
     I: int = 0
@@ -104,8 +106,9 @@ class Chip8:
     stack: List[int] = field(default_factory=list)
     delay_timer: int = 0
     sound_timer: int = 0
-    display: List[int] = field(default_factory=lambda: [
-                               0] * (SCREEN_W * SCREEN_H))
+    width: int = DEFAULT_W
+    height: int = DEFAULT_H
+    display: List[int] = field(default_factory=lambda: [0] * (DEFAULT_W * DEFAULT_H))
     keys: List[bool] = field(default_factory=lambda: [False] * 16)
     draw_flag: bool = False
 
@@ -118,8 +121,21 @@ class Chip8:
         self.stack = []
         self.delay_timer = 0
         self.sound_timer = 0
-        self.display = [0] * (SCREEN_W * SCREEN_H)
+        self.width = DEFAULT_W
+        self.height = DEFAULT_H
+        self.display = [0] * (self.width * self.height)
         self.keys = [False] * 16
+        self.draw_flag = True
+
+    def set_schip(self, enabled: bool):
+        self.schip_mode = enabled
+        if enabled:
+            self.width = 128
+            self.height = 64
+        else:
+            self.width = 64
+            self.height = 32
+        self.display = [0] * (self.width * self.height)
         self.draw_flag = True
 
     def load_rom(self, data: bytes):
@@ -145,15 +161,38 @@ class Chip8:
         y = (opcode & 0x00F0) >> 4
         kk = opcode & 0x00FF
 
+        # 0x0000 group (including SCHIP scroll and mode ops)
         if opcode == 0x00E0:  # CLS
-            self.display = [0] * (SCREEN_W * SCREEN_H)
+            self.display = [0] * (self.width * self.height)
             self.draw_flag = True
         elif opcode == 0x00EE:  # RET
             if not self.stack:
                 raise RuntimeError("Stack underflow on RET")
             self.pc = self.stack.pop()
-        elif opcode & 0xF000 == 0x0000:  # 0NNN (ignored, RCA 1802 call)
-            pass
+        elif opcode & 0xF000 == 0x0000:
+            # SCHIP extended opcodes: 00CN, 00FB, 00FC, 00FE, 00FF
+            if self.schip_mode and (opcode & 0xF0FF) == 0x00FB:
+                # Scroll display right by 4 pixels
+                self._scroll_right(4)
+                self.draw_flag = True
+            elif self.schip_mode and (opcode & 0xF0FF) == 0x00FC:
+                # Scroll display left by 4 pixels
+                self._scroll_left(4)
+                self.draw_flag = True
+            elif self.schip_mode and (opcode & 0xF0FF) == 0x00FE:
+                # Low resolution
+                self.set_schip(False)
+            elif self.schip_mode and (opcode & 0xF0FF) == 0x00FF:
+                # High resolution
+                self.set_schip(True)
+            elif self.schip_mode and (opcode & 0xF0F0) == 0x00C0:
+                # 00CN - scroll down N lines (lowest nibble)
+                n_down = opcode & 0x000F
+                self._scroll_down(n_down)
+                self.draw_flag = True
+            else:
+                # 0NNN - ignored or system call
+                pass
         elif opcode & 0xF000 == 0x1000:  # JP addr
             self.pc = nnn
         elif opcode & 0xF000 == 0x2000:  # CALL addr
@@ -189,12 +228,18 @@ class Chip8:
             self.V[0xF] = 1 if self.V[x] > self.V[y] else 0
             self.V[x] = (self.V[x] - self.V[y]) & 0xFF
         elif opcode & 0xF00F == 0x8006:  # SHR Vx {, Vy}
+            if self.legacy_shift:
+                # Original quirk: Vx = Vy; then shift Vx right
+                self.V[x] = self.V[y]
             self.V[0xF] = self.V[x] & 0x1
             self.V[x] = (self.V[x] >> 1) & 0xFF
         elif opcode & 0xF00F == 0x8007:  # SUBN Vx, Vy (Vx = Vy - Vx)
             self.V[0xF] = 1 if self.V[y] > self.V[x] else 0
             self.V[x] = (self.V[y] - self.V[x]) & 0xFF
         elif opcode & 0xF00F == 0x800E:  # SHL Vx {, Vy}
+            if self.legacy_shift:
+                # Original quirk: Vx = Vy; then shift Vx left
+                self.V[x] = self.V[y]
             self.V[0xF] = (self.V[x] >> 7) & 0x1
             self.V[x] = (self.V[x] << 1) & 0xFF
         elif opcode & 0xF00F == 0x9000:  # SNE Vx, Vy
@@ -202,12 +247,20 @@ class Chip8:
                 self.pc += 2
         elif opcode & 0xF000 == 0xA000:  # LD I, addr
             self.I = nnn
-        elif opcode & 0xF000 == 0xB000:  # JP V0, addr
-            self.pc = (nnn + self.V[0]) & 0xFFF
+        elif opcode & 0xF000 == 0xB000:  # JP V0, addr (or alt)
+            if self.alt_bnnn:
+                # alternative behavior: use Vx as offset
+                self.pc = (nnn + self.V[x]) & 0xFFF
+            else:
+                self.pc = (nnn + self.V[0]) & 0xFFF
         elif opcode & 0xF000 == 0xC000:  # RND Vx, byte
             self.V[x] = random.randint(0, 255) & kk
         elif opcode & 0xF000 == 0xD000:  # DRW Vx, Vy, nibble
-            self._draw_sprite(self.V[x], self.V[y], n)
+            # If SCHIP and n == 0 => 16x16 sprite (2 bytes per row)
+            if self.schip_mode and n == 0:
+                self._draw_sprite_16(self.V[x], self.V[y])
+            else:
+                self._draw_sprite_8(self.V[x], self.V[y], n)
         elif opcode & 0xF0FF == 0xE09E:  # SKP Vx
             if self._is_key_down(self.V[x] & 0xF):
                 self.pc += 2
@@ -219,7 +272,7 @@ class Chip8:
         elif opcode & 0xF0FF == 0xF00A:  # LD Vx, K (wait for key)
             key = self._wait_for_key()
             if key is None:
-                # If called from the main loop, we can "stall" by stepping back PC by 2
+                # stall: back up PC so instruction repeats until key press
                 self.pc = (self.pc - 2) & 0xFFF
             else:
                 self.V[x] = key
@@ -230,7 +283,6 @@ class Chip8:
         elif opcode & 0xF0FF == 0xF01E:  # ADD I, Vx
             self.I = (self.I + self.V[x]) & 0xFFFF
         elif opcode & 0xF0FF == 0xF029:  # LD F, Vx
-            # Point I to the sprite for digit in Vx (0-F), 5 bytes per sprite
             digit = self.V[x] & 0xF
             self.I = FONT_ADDRESS + digit * 5
         elif opcode & 0xF0FF == 0xF033:  # LD B, Vx (BCD)
@@ -249,8 +301,7 @@ class Chip8:
             if self.legacy_store:
                 self.I = (self.I + x + 1) & 0xFFFF
         else:
-            raise NotImplementedError(
-                f"Unknown opcode: {opcode:04X} at PC {self.pc-2:03X}")
+            raise NotImplementedError(f"Unknown opcode: {opcode:04X} at PC {self.pc-2:03X}")
 
     # =============== Helpers ===============
     def _is_key_down(self, chip8_key: int) -> bool:
@@ -265,35 +316,88 @@ class Chip8:
                 return i
         return None
 
-    def _draw_sprite(self, x_pos: int, y_pos: int, height: int):
+    def _draw_sprite_8(self, x_pos: int, y_pos: int, height: int):
         self.V[0xF] = 0
-        x_pos %= SCREEN_W
-        y_pos %= SCREEN_H
+        x_pos %= self.width
+        y_pos %= self.height
         for row in range(height):
             sprite = self.memory[self.I + row]
-            py = (y_pos + row) % SCREEN_H
+            py = (y_pos + row) % self.height
             for col in range(8):
                 bit = (sprite >> (7 - col)) & 1
                 if bit:
-                    px = (x_pos + col) % SCREEN_W
-                    idx = py * SCREEN_W + px
+                    px = (x_pos + col) % self.width
+                    idx = py * self.width + px
                     if self.display[idx] == 1:
                         self.V[0xF] = 1
                     self.display[idx] ^= 1
         self.draw_flag = True
 
+    def _draw_sprite_16(self, x_pos: int, y_pos: int):
+        # 16x16 sprite: each row is two bytes (big-endian), total 32 bytes
+        self.V[0xF] = 0
+        x_pos %= self.width
+        y_pos %= self.height
+        for row in range(16):
+            hi = self.memory[self.I + row*2]
+            lo = self.memory[self.I + row*2 + 1]
+            bits = (hi << 8) | lo
+            py = (y_pos + row) % self.height
+            for col in range(16):
+                bit = (bits >> (15 - col)) & 1
+                if bit:
+                    px = (x_pos + col) % self.width
+                    idx = py * self.width + px
+                    if self.display[idx] == 1:
+                        self.V[0xF] = 1
+                    self.display[idx] ^= 1
+        self.draw_flag = True
+
+    def _scroll_right(self, pixels: int):
+        w, h = self.width, self.height
+        new = [0] * (w * h)
+        for y in range(h):
+            for x in range(w):
+                src = y*w + x
+                dst_x = (x + pixels) % w
+                new[y*w + dst_x] = self.display[src]
+        self.display = new
+
+    def _scroll_left(self, pixels: int):
+        w, h = self.width, self.height
+        new = [0] * (w * h)
+        for y in range(h):
+            for x in range(w):
+                src = y*w + x
+                dst_x = (x - pixels) % w
+                new[y*w + dst_x] = self.display[src]
+        self.display = new
+
+    def _scroll_down(self, lines: int):
+        # scroll down by shifting rows downward; top rows become zero
+        w, h = self.width, self.height
+        new = [0] * (w * h)
+        for y in range(h):
+            for x in range(w):
+                src_y = y - lines
+                if src_y >= 0:
+                    new[y*w + x] = self.display[src_y*w + x]
+                else:
+                    new[y*w + x] = 0
+        self.display = new
+
 # ==============================
 # Pygame Frontend
 # ==============================
-
-
 class Frontend:
     def __init__(self, chip8: Chip8, scale: int = 10, tone_hz: int = 440):
         self.chip8 = chip8
         self.scale = max(1, int(scale))
-        self.surface = pygame.display.set_mode(
-            (SCREEN_W * self.scale, SCREEN_H * self.scale))
-        pygame.display.set_caption("CHIPemu")
+        # ensure window fits even for high res
+        width_px = chip8.width * self.scale
+        height_px = chip8.height * self.scale
+        self.surface = pygame.display.set_mode((width_px, height_px))
+        pygame.display.set_caption("CHIP-8 / SCHIP (Python)")
         self.clock = pygame.time.Clock()
 
         # Audio setup (simple square tone)
@@ -307,7 +411,11 @@ class Frontend:
         except Exception:
             return
         # generate a 100ms square wave buffer
-        import numpy as np
+        try:
+            import numpy as np
+        except Exception:
+            self.sound = None
+            return
         sr = 44100
         duration = 0.1
         t = np.arange(int(sr * duration))
@@ -333,16 +441,21 @@ class Frontend:
                         self.chip8.keys[k_idx] = is_down
 
     def render(self):
-        # Draw pixels (monochrome)
+        # If resolution changed (SCHIP mode switch), recreate window
+        desired_w = self.chip8.width * self.scale
+        desired_h = self.chip8.height * self.scale
+        cur = self.surface.get_size()
+        if cur != (desired_w, desired_h):
+            self.surface = pygame.display.set_mode((desired_w, desired_h))
+
         surf = self.surface
         surf.lock()
         surf.fill((0, 0, 0))
         pixel_size = self.scale
-        for y in range(SCREEN_H):
-            for x in range(SCREEN_W):
-                if self.chip8.display[y * SCREEN_W + x]:
-                    rect = pygame.Rect(x * pixel_size, y *
-                                       pixel_size, pixel_size, pixel_size)
+        for y in range(self.chip8.height):
+            for x in range(self.chip8.width):
+                if self.chip8.display[y * self.chip8.width + x]:
+                    rect = pygame.Rect(x * pixel_size, y * pixel_size, pixel_size, pixel_size)
                     pygame.draw.rect(surf, (255, 255, 255), rect)
         surf.unlock()
         pygame.display.flip()
@@ -351,7 +464,7 @@ class Frontend:
         self.clock.tick(fps)
 
     def play_sound_if_needed(self):
-        if hasattr(self, 'sound') and self.chip8.sound_timer > 0:
+        if hasattr(self, 'sound') and self.chip8.sound_timer > 0 and self.sound is not None:
             # Fire-and-forget short blip
             self.sound.play()
 
@@ -359,25 +472,23 @@ class Frontend:
 # Main loop
 # ==============================
 
-
 def main():
-    parser = argparse.ArgumentParser(
-        description="CHIP-8 emulator in Python by D/V")
+    parser = argparse.ArgumentParser(description="CHIP-8 / SCHIP emulator in Python")
     parser.add_argument("rom", help="Path to CHIP-8 ROM")
-    parser.add_argument("--scale", type=int, default=15,
-                        help="Pixel scale factor (default 15)")
-    parser.add_argument("--clock", type=int, default=700,
-                        help="CPU clock in Hz (default 700)")
-    parser.add_argument("--legacy-store", action="store_true",
-                        help="Use original FX55/FX65 quirk (I increments)")
-    parser.add_argument("--tone", type=int, default=440,
-                        help="Beep tone frequency in Hz")
+    parser.add_argument("--scale", type=int, default=8, help="Pixel scale factor (default 8)")
+    parser.add_argument("--clock", type=int, default=700, help="CPU clock in Hz (default 700)")
+    parser.add_argument("--legacy-store", action="store_true", help="Use original FX55/FX65 quirk (I increments)")
+    parser.add_argument("--legacy-shift", action="store_true", help="Use original 8XY6/8XYE quirk (Vx = Vy first)")
+    parser.add_argument("--alt-bnnn", action="store_true", help="Use alternative BNNN behavior (uses Vx as offset)")
+    parser.add_argument("--superchip", action="store_true", help="Enable Super-CHIP features (128x64, extra opcodes)")
+    parser.add_argument("--tone", type=int, default=440, help="Beep tone frequency in Hz")
     args = parser.parse_args()
 
     pygame.init()
     pygame.display.set_allow_screensaver(True)
 
-    chip8 = Chip8(legacy_store=args.legacy_store)
+    chip8 = Chip8(legacy_store=args.legacy_store, legacy_shift=args.legacy_shift, alt_bnnn=args.alt_bnnn)
+    chip8.set_schip(args.superchip)
 
     # Load font
     chip8.memory[FONT_ADDRESS:FONT_ADDRESS + len(FONTSET)] = bytes(FONTSET)
@@ -402,7 +513,12 @@ def main():
 
         # Run CPU cycles for this frame
         for _ in range(cycles_per_frame):
-            chip8.emulate_cycle()
+            try:
+                chip8.emulate_cycle()
+            except NotImplementedError as e:
+                print(e)
+                pygame.quit()
+                sys.exit(1)
 
         # Timer update at ~60 Hz
         now = time.perf_counter()
@@ -429,4 +545,5 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nExiting.")
+        print("
+Exiting.")
