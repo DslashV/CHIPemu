@@ -25,7 +25,7 @@ Dependencies:
 Run:
   python chip8_emulator.py path/to/rom [--scale 10] [--clock 700] [--superchip]
 
-Author: D/V
+Author: D/V, FX0A fix by AArt1256
 License: MIT
 """
 
@@ -111,7 +111,9 @@ class Chip8:
     height: int = DEFAULT_H
     display: List[int] = field(default_factory=lambda: [0] * (DEFAULT_W * DEFAULT_H))
     keys: List[bool] = field(default_factory=lambda: [False] * 16)
+    keys_released: List[bool] = field(default_factory=lambda: [False] * 16)
     draw_flag: bool = False
+    fx0a_running: bool = False
 
     def reset(self):
         self.memory = bytearray(MEM_SIZE)
@@ -126,7 +128,9 @@ class Chip8:
         self.height = DEFAULT_H
         self.display = [0] * (self.width * self.height)
         self.keys = [False] * 16
+        self.keys_released = [False] * 16
         self.draw_flag = True
+        self.fx0a_running = False
 
     def set_schip(self, enabled: bool):
         self.schip_mode = enabled
@@ -271,12 +275,14 @@ class Chip8:
         elif opcode & 0xF0FF == 0xF007:  # LD Vx, DT
             self.V[x] = self.delay_timer
         elif opcode & 0xF0FF == 0xF00A:  # LD Vx, K (wait for key)
-            key = self._wait_for_key()
+            self.fx0a_running = True
+            key = self._wait_for_key_release()
             if key is None:
                 # stall: back up PC so instruction repeats until key press
                 self.pc = (self.pc - 2) & 0xFFF
             else:
                 self.V[x] = key
+                self.fx0a_running = False
         elif opcode & 0xF0FF == 0xF015:  # LD DT, Vx
             self.delay_timer = self.V[x]
         elif opcode & 0xF0FF == 0xF018:  # LD ST, Vx
@@ -310,10 +316,11 @@ class Chip8:
             return self.keys[chip8_key]
         return False
 
-    def _wait_for_key(self) -> int | None:
-        # Non-blocking check: if a key is pressed, return its CHIP-8 index; else None
+    def _wait_for_key_release(self) -> int | None:
+        # Non-blocking check: if a key is released, return its CHIP-8 index; else None
         for i in range(16):
-            if self.keys[i]:
+            if self.keys_released[i] :
+                self.keys_released = [False]*16
                 return i
         return None
 
@@ -439,6 +446,8 @@ class Frontend:
                 # Map keys
                 for k_idx, pgk in KEYMAP.items():
                     if event.key == pgk:
+                        if self.chip8.keys[k_idx] == True and is_down == False and self.chip8.fx0a_running:
+                            self.chip8.keys_released[k_idx] = True
                         self.chip8.keys[k_idx] = is_down
 
     def render(self):
